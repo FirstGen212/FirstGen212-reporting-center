@@ -6,6 +6,7 @@
 //   table:     'public.census_snapshot_history'
 //   columns:   [{ field: 'fields.firstName', label: 'First name', agg?: count|count_distinct|sum|avg|min|max }]
 //   filters:   [{ field, op, value, value2 }]    match: 'all' | 'any'
+//   locked:    [{ field, op, value, value2 }]    rules the report is locked to; always all must match, whatever "match" says
 //   latest:    { key: 'airtable_id', order: 'captured_at', as_of: '2026-09-30' | '' }   one row per key: its newest version
 //   sort:      [{ col: 0, dir: 'asc' | 'desc' }]   (col is a position in columns)
 //   limit:     number | null
@@ -153,9 +154,8 @@ function compile(spec, { table, lookup, policy, customer = null, today = new Dat
   });
 
   // ---- WHERE
-  const conds = [];
-  for (const flt of spec.filters || []) {
-    if (!flt?.field || !flt.op) continue;
+  const cond = (flt, conds) => {
+    if (!flt?.field || !flt.op) return;
     const f = field(flt.field), e = expr(f, f.alias);
     const allowed = OPS[f.kind] || OPS.text;
     if (!allowed.includes(flt.op)) { const err = new Error(`"${flt.op}" can't be used on ${f.label}`); err.status = 400; throw err; }
@@ -191,8 +191,11 @@ function compile(spec, { table, lookup, policy, customer = null, today = new Dat
       case 'empty': conds.push(emptySQL(e)); break;
       case 'not_empty': conds.push(`NOT ${emptySQL(e)}`); break;
     }
-  }
-  let where = conds.length ? `(${conds.join(spec.match === 'any' ? ' OR ' : ' AND ')})` : '';
+  };
+  const conds = [], locked = [];
+  for (const flt of spec.filters || []) cond(flt, conds);
+  for (const flt of spec.locked || []) cond(flt, locked);
+  let where = [conds.length ? `(${conds.join(spec.match === 'any' ? ' OR ' : ' AND ')})` : '', ...locked].filter(Boolean).join(' AND ');
   if (spec.customer_field && customer != null && customer !== '') {
     const cf = field(spec.customer_field);
     const c = `lower(${expr(cf, cf.alias).text}) = lower(${P(String(customer))})`;

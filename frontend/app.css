@@ -340,3 +340,15 @@ table.t th.sortable .sort-arrow { font-size: 10px; }
   .rc-builder { grid-template-columns: 1fr; }
   .rc-fields { position: static; max-height: 60vh; }
 }
+.rc-cond { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(120px, 170px) minmax(180px, 2fr) 32px; }
+.rc-cond > select { width: 100%; }
+.rc-val { flex-wrap: nowrap; min-width: 0; }
+@media (max-width: 640px) { .rc-cond { grid-template-columns: 1fr 1fr; } .rc-cond > .rc-val { grid-column: 1 / -1; } }
+.rc-val > input { flex: 1 1 120px; }
+.rc-pick { position: relative; flex: none; }
+.rc-pick-list { left: auto; right: 0; width: 300px; max-width: calc(100vw - 32px); max-height: 360px; }
+.rc-pick-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; }
+.rc-pick-item:hover { background: var(--accent-2); }
+.rc-pick-item > input { flex: none; width: 15px; margin: 0; }
+.rc-pick-item > span:nth-child(2) { flex: 1 1 auto; overflow-wrap: anywhere; }
+.rc-pick-item > span:nth-child(3) { flex: none; }

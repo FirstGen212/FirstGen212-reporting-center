@@ -55,3 +55,9 @@ test('linked tables: only matching rows, and errors for unknown links', () => {
   assert.throws(() => Q.compile({ ...joined, joins: [{ ...joined.joins[0], on: { left: 'j1:csm', right: 'csm' } }] }, { lookup }), /listed before/);
   assert.throws(() => Q.compile({ ...joined, columns: [{ field: 'j1:ssn' }] }, { lookup }), /not a field/);
 });
+test('locked rules always apply, even when filters match "any"', () => {
+  const q = Q.compile({ ...base, match: 'any', filters: [{ field: 'fields.firstName', op: 'eq', value: 'a' }, { field: 'fields.firstName', op: 'eq', value: 'b' }],
+    locked: [{ field: 'fields.firstName', op: 'in', value: 'Active, On leave' }] }, { table });
+  assert.match(q.sql, /WHERE \(lower\(.*\) = lower\(\$1\) OR lower\(.*\) = lower\(\$2\)\) AND lower\(.*\) = ANY\(\$3::text\[\]\)/);
+  assert.deepStrictEqual(q.params.slice(0, 3), ['a', 'b', ['active', 'on leave']]);
+});
