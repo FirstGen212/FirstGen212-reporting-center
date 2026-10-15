@@ -249,7 +249,8 @@ async function tick() {
 
 // ---------------------------------------------------------------- external share links
 const hashToken = t => crypto.createHash('sha256').update(String(t)).digest('hex');
-const appUrl = () => (process.env.APP_URL || getSetting('app_url', 'http://localhost:4400')).replace(/\/$/, '');
+// APP_URL or the Settings value wins (e.g. a custom domain); otherwise Render's own onrender.com address.
+const appUrl = () => (process.env.APP_URL || getSetting('app_url', '') || process.env.RENDER_EXTERNAL_URL || 'http://localhost:4400').replace(/\/$/, '');
 function shareFor(token) {
   if (!/^[\w-]{20,80}$/.test(String(token || ''))) return null;
   const s = get('SELECT * FROM rc_shares WHERE token_hash = ?', hashToken(token));

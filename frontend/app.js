@@ -261,7 +261,7 @@ async function viewSettings(view) {
         h('label', { class: 'field' }, 'Company name (shown on reports, shared pages and emails)', h('input', { value: v.company, oninput: e => { v.company = e.target.value; } })),
         h('label', { class: 'field' }, `Logo for PDFs (PNG)${s.has_logo ? ': a custom logo is set' : ''}`, logoIn),
         h('label', { class: 'field' }, 'Timezone (schedules run in this timezone)', h('input', { value: v.timezone, placeholder: 'America/New_York', oninput: e => { v.timezone = e.target.value; } })),
-        h('label', { class: 'field' }, 'App address (used in shared links)', h('input', { value: v.app_url, placeholder: 'https://reports.yourcompany.com', oninput: e => { v.app_url = e.target.value; } })),
+        h('label', { class: 'field' }, 'App address (used in shared links)', h('input', { value: v.app_url, placeholder: s.default_app_url || 'https://reports.yourcompany.com', oninput: e => { v.app_url = e.target.value; } })),
         envNote(['APP_URL', 'TIMEZONE']))),
     h('div', { class: 'card' }, h('h2', null, 'Database'),
       h('div', { class: 'col' },

@@ -23,11 +23,10 @@ If Row Level Security is on for a table, also add a policy that lets `reporting_
 2. When asked, fill in:
    - `REPORTING_DB_URL`: from step 1
    - `ADMIN_EMAIL` and `ADMIN_PASSWORD`: your first sign-in (the password needs 10+ characters with letters and numbers)
-   - `APP_URL`: the address people will use, e.g. `https://reporting-center.onrender.com` or your own domain. Shared links use it.
    - `SMTP_*` and `EMAIL_FROM`: your mail provider. You can leave these empty at first.
 3. Deploy. When it is live, sign in with the admin email and password.
 
-`SESSION_SECRET` is generated for you. `DELIVERY_MODE` starts at `dry_run`, so scheduled emails only go to the Outbox. Switch it to `live` (or set *Live* under Settings → Email) when you are ready to send.
+`SESSION_SECRET` is generated for you, and shared links use the `onrender.com` address Render gives the service. If you later add your own domain, set it under Settings → App address (or as `APP_URL`). `DELIVERY_MODE` starts at `dry_run`, so scheduled emails only go to the Outbox. Switch it to `live` (or set *Live* under Settings → Email) when you are ready to send.
 
 ## 3. First steps in the app
 

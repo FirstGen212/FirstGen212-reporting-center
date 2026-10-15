@@ -172,7 +172,7 @@ const mask = v => (v ? String(v).replace(/(:\/\/[^:]+:)[^@]+@/, '$1••••�
 app.get('/api/settings', ...admin, (req, res) => {
   const e = getSetting('email', {});
   res.json({
-    company: getSetting('company', {}).name || '', has_logo: !!getSetting('company', {}).logo, timezone: tz(), app_url: process.env.APP_URL || getSetting('app_url', ''),
+    company: getSetting('company', {}).name || '', has_logo: !!getSetting('company', {}).logo, timezone: tz(), app_url: process.env.APP_URL || getSetting('app_url', ''), default_app_url: process.env.RENDER_EXTERNAL_URL || '',
     database: { url: mask(source.connectionString()), from_env: !!process.env.REPORTING_DB_URL },
     email: { ...mail.publicStatus(), smtp_pass_set: !!(process.env.SMTP_PASS || e.smtp_pass) },
     env: ['APP_URL', 'TIMEZONE', 'REPORTING_DB_URL'].filter(k => process.env[k]),
