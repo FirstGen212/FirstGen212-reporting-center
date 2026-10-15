@@ -116,7 +116,20 @@ async function introspect() {
     for (const col of t.columns.filter(c => c.kind === 'json')) {
       try {
         const { rows } = await readOnly(`SELECT ${qi(col.name)} AS v FROM ${qi(t.schema)}.${qi(t.name)} WHERE ${qi(col.name)} IS NOT NULL LIMIT ${SAMPLE_ROWS}`, [], { timeoutMs: 30000 });
-        col.json_fields = collectPaths(rows.map(r => (typeof r.v === 'string' ? safeParse(r.v) : r.v)));
+        const samples = rows.map(r => (typeof r.v === 'string' ? safeParse(r.v) : r.v));
+        col.json_fields = collectPaths(samples);
+        // The sample only sees the first rows, so keys added to the data later (a new Airtable field, say) would be
+        // missed. List every top-level key in the whole table and sample the ones the first pass didn't see.
+        try {
+          const c = `(${qi(col.name)})::jsonb`, from = `${qi(t.schema)}.${qi(t.name)}`;
+          const { rows: keys } = await readOnly(`SELECT DISTINCT jsonb_object_keys(${c}) AS k FROM ${from} WHERE jsonb_typeof(${c}) = 'object'`, [], { timeoutMs: 60000 });
+          const have = new Set(col.json_fields.map(f => f.path.split('.')[0]));
+          for (const { k } of keys.filter(r => !have.has(r.k) && /^[\w\- ]{1,80}$/.test(r.k)).slice(0, 200)) {
+            const { rows: more } = await readOnly(`SELECT ${c} -> $1 AS v FROM ${from} WHERE ${c} ? $1 LIMIT 200`, [k], { timeoutMs: 30000 });
+            for (const f of collectPaths(more.map(r => ({ [k]: r.v })))) col.json_fields.push({ ...f, fill: 0 });
+          }
+          col.json_fields.sort((a, b) => a.path.localeCompare(b.path));
+        } catch (e) { col.json_keys_error = e.message; }
       } catch (e) { col.json_fields = []; col.json_error = e.message; }
     }
   }

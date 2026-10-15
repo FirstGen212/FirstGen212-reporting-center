@@ -142,7 +142,7 @@ function fieldsPanel(d, editable, redraw) {
           errNote(t), open ? t.fields.map(f => item(t, f)) : null));
       }
     }
-    if (!list.childElementCount) list.append(h('div', { class: 'empty small' }, words.length ? 'No fields match.' : 'No tables are available yet. An admin can enable them under Data settings.'));
+    if (!list.childElementCount) list.append(h('div', { class: 'empty small' }, words.length ? 'No fields match. Fields that look sensitive (birth dates, SSNs, bank details) stay hidden until an admin allows them under Reports › Data settings › Hidden fields.' : 'No tables are available yet. An admin can enable them under Data settings.'));
   };
   const search = h('input', { type: 'search', class: 'rc-fsearch', placeholder: 'Search fields in every table…', value: ED.q, 'aria-label': 'Search fields',
     oninput: debounce(e => { ED.q = e.target.value; draw(); }, 120) });
