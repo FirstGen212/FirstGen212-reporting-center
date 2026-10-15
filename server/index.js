@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
@@ -35,7 +36,13 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '2mb' }));
 const FRONTEND_DIR = path.join(__dirname, '..', 'frontend');
-app.use(express.static(FRONTEND_DIR));
+// The page always asks the server for fresh copies, and its scripts and styles carry this deploy's version,
+// so a new deploy shows up on the next page load instead of waiting for the browser's cache.
+const BUILD = String(process.env.RENDER_GIT_COMMIT || Date.now()).slice(0, 12);
+const indexHtml = () => fs.readFileSync(path.join(FRONTEND_DIR, 'index.html'), 'utf8').replace(/((?:src|href)="\/[\w.-]+\.(?:js|css))"/g, `$1?v=${BUILD}"`);
+const sendIndex = (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.type('html').send(indexHtml()); };
+app.get(['/', '/index.html'], sendIndex);
+app.use(express.static(FRONTEND_DIR, { index: false, setHeaders: res => res.setHeader('Cache-Control', 'no-cache') }));
 
 // ---------------------------------------------------------------- auth
 const readCookie = (req, name) => {
@@ -56,7 +63,7 @@ const wrap = fn => async (req, res) => {
 const httpErr = (status, msg) => Object.assign(new Error(msg), { status });
 const publicUser = u => u && { id: u.id, name: u.name, email: u.email, title: u.title, role_id: u.role_id, active: !!u.active, last_login_at: u.last_login_at, has_password: !!u.password_hash, created_at: u.created_at };
 
-app.get('/healthz', (req, res) => { get('SELECT 1 AS ok'); res.json({ ok: true }); });
+app.get('/healthz', (req, res) => { get('SELECT 1 AS ok'); res.json({ ok: true, version: BUILD }); });
 app.get('/api/auth-config', (req, res) => res.json({ demo: auth.DEMO_MODE, min_password: auth.MIN_PASSWORD, company: getSetting('company', {}).name || 'First Gen' }));
 app.get('/api/login-options', (req, res) => {
   if (!auth.DEMO_MODE) return res.json([]);
@@ -245,7 +252,7 @@ const syncSchema = async () => {
 setTimeout(syncSchema, 2000);
 setInterval(syncSchema, 10 * 60 * 1000).unref?.();
 
-app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(FRONTEND_DIR, 'index.html')));
+app.get(/^(?!\/api).*/, sendIndex);
 
 const PORT = Number(process.env.PORT) || 4400;
 app.listen(PORT, () => console.log(`Reporting Center running at http://localhost:${PORT}  (email: ${mail.publicStatus().mode})`));
