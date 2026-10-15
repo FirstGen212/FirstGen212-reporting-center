@@ -110,6 +110,7 @@ function cleanSpec(spec = {}) {
     table: String(spec.table || ''),
     columns: (spec.columns || []).filter(c => c?.field).slice(0, 60).map(c => ({ field: String(c.field), label: c.label ? String(c.label).slice(0, 120) : undefined, agg: c.agg || undefined })),
     filters: (spec.filters || []).filter(f => f?.field && f.op).slice(0, 40).map(f => ({ field: String(f.field), op: String(f.op), value: f.value ?? '', value2: f.value2 ?? '' })),
+    locked: (spec.locked || []).filter(f => f?.field && f.op).slice(0, 40).map(f => ({ field: String(f.field), op: String(f.op), value: f.value ?? '', value2: f.value2 ?? '' })),
     match: spec.match === 'any' ? 'any' : 'all',
     latest: spec.latest?.key && spec.latest?.order ? { key: String(spec.latest.key), order: String(spec.latest.order), as_of: String(spec.latest.as_of || '') } : null,
     sort: (spec.sort || []).slice(0, 5).map(s => ({ col: Number(s.col), dir: s.dir === 'desc' ? 'desc' : 'asc' })).filter(s => Number.isInteger(s.col)),

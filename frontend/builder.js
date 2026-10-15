@@ -19,13 +19,13 @@ function rcPrune(d) {
   for (;;) {
     const used = new Set();
     const mark = id => { const m = /^(j\d{1,2}):/.exec(String(id || '')); if (m) used.add(m[1]); };
-    s.columns.forEach(c => mark(c.field)); s.filters.forEach(f => mark(f.field)); d.required.forEach(r => mark(r.field)); mark(s.customer_field);
+    s.columns.forEach(c => mark(c.field)); s.filters.forEach(f => mark(f.field)); (s.locked || []).forEach(f => mark(f.field)); d.required.forEach(r => mark(r.field)); mark(s.customer_field);
     (s.joins || []).forEach(j => { mark(j.on?.left); });
     const before = s.joins.length;
     s.joins = s.joins.filter(j => used.has(j.id));
     if (s.joins.length === before) break;
   }
-  if (!s.columns.length && !s.filters.length && !s.joins.length && !d.required.length) { s.latest = null; s.customer_field = null; }
+  if (!s.columns.length && !s.filters.length && !(s.locked || []).length && !s.joins.length && !d.required.length) { s.latest = null; s.customer_field = null; }
 }
 function rcMoveCol(s, from, to) {
   if (from === to || from == null || to == null) return;
@@ -159,7 +159,7 @@ function columnsBar(d, editable, redraw) {
     h('span', { class: 'small muted' }, s.columns.length ? (editable ? 'Drag to reorder. Click a column to rename, summarise or sort it.' : '') : ''),
     h('span', { class: 'spacer' }),
     editable && s.columns.length ? h('button', { class: 'sm ghost', onclick: () => { s.columns.push({ field: '*', agg: 'count' }); redraw.changed(); } }, '+ Count of rows') : null,
-    editable && s.columns.length ? h('button', { class: 'sm ghost', onclick: async () => { if (await confirmBox('Remove every column, filter and linked table?', 'Clear')) { s.columns = []; s.filters = []; s.sort = []; d.required = []; rcPrune(d); ED.edit = null; redraw.changed(); } } }, 'Clear') : null)];
+    editable && s.columns.length ? h('button', { class: 'sm ghost', onclick: async () => { if (await confirmBox('Remove every column, filter and linked table?', 'Clear')) { s.columns = []; s.filters = []; s.locked = []; s.sort = []; d.required = []; rcPrune(d); ED.edit = null; redraw.changed(); } } }, 'Clear') : null)];
   if (!s.columns.length) { out.push(h('div', { class: 'rc-drop-empty' }, 'Search for a field on the left and click it to start.')); return out; }
 
   const strip = h('div', { class: 'rc-chips' });
@@ -218,7 +218,7 @@ function drawTabs(box, d, spec, { editable, type = null, redraw = null }) {
   if (ED.tab === 'preview') livePreview(body, d, spec);
   if (ED.tab === 'filters') filtersTab(body, d, editable, again);
   if (ED.tab === 'settings') settingsTab(body, d, editable, again);
-  if (ED.tab === 'audit') { if (!type) body.append(auditRulesCard(d, editable)); const a = h('div', { style: { marginTop: '12px' } }); body.append(a); auditPane(a, d, spec); }
+  if (ED.tab === 'audit') { if (!type || type.spec.locked?.length) body.append(lockedCard(type || d, editable && !type, again)); if (!type) body.append(auditRulesCard(d, editable)); const a = h('div', { style: { marginTop: '12px' } }); body.append(a); auditPane(a, d, spec); }
   if (ED.tab === 'schedules') schedulesForReport(body, d);
   if (ED.tab === 'links') linksForReport(body, d);
 }
@@ -237,34 +237,108 @@ function livePreview(body, d, spec) {
   previewPane(body, d, spec);
 }
 
+// One condition row (field, operator, value), shared by filters and locked rules. Text and number fields get a
+// "Pick" list of the values actually in the data, so you can tick the ones you want instead of typing them.
+function condRow(d, list, i, dis, again) {
+  const flt = list[i], f = rcField(rcScope(d.spec), flt.field);
+  const ops = RC.meta.ops[f?.kind] || RC.meta.ops.text;
+  if (!ops.includes(flt.op)) flt.op = ops[0];
+  const ph = f?.kind === 'date' ? (['last_days', 'next_days'].includes(flt.op) ? 'days' : 'YYYY-MM-DD') : ['in', 'not_in'].includes(flt.op) ? 'a, b, c' : 'value';
+  const valIn = k => h('input', { value: flt[k] ?? '', disabled: dis, placeholder: ph, onchange: e => { flt[k] = e.target.value; again(); } });
+  const pickable = ['text', 'number', 'list'].includes(f?.kind) && ['eq', 'neq', 'in', 'not_in'].includes(flt.op);
+  return h('div', { class: 'rc-row rc-cond' },
+    h('span', { class: 'rc-filter-field', title: f?.label || flt.field }, f?.label || flt.field),
+    h('select', { disabled: dis, onchange: e => { flt.op = e.target.value; again(); } }, ops.map(o => h('option', { value: o, selected: flt.op === o }, OP_LABELS[o] || o))),
+    NO_VALUE.includes(flt.op) ? h('span') : h('span', { class: 'row rc-val' }, valIn('value'), flt.op === 'between' ? valIn('value2') : null, pickable && !dis ? valuePicker(d, flt, again) : null),
+    dis ? null : h('button', { class: 'ghost sm', 'aria-label': 'Remove', onclick: () => { list.splice(i, 1); rcPrune(d); again(); } }, icon('x', 14)));
+}
+
+// A dropdown of a field's distinct values (most common first) with tick boxes. Ticking more than one turns
+// "is" into "is any of" and "is not" into "is none of".
+function valuePicker(d, flt, again) {
+  const s = d.spec, wrap = h('div', { class: 'rc-finder rc-pick' });
+  const box = h('div', { class: 'rc-finder-list rc-pick-list hidden' });
+  const chosen = () => new Set(String(flt.value ?? '').split(',').map(x => x.trim()).filter(Boolean));
+  const q = h('input', { type: 'search', placeholder: 'Search values…', oninput: debounce(() => load(), 300) });
+  const items = h('div');
+  let seq = 0;
+  const load = async () => {
+    const my = ++seq;
+    items.replaceChildren(h('div', { class: 'small muted', style: { padding: '8px 10px' } }, 'Loading values…'));
+    let vals;
+    try { vals = await api('POST', '/api/rc/values', { table: s.table, field: flt.field, latest: s.latest, joins: s.joins || [], q: q.value || undefined }); }
+    catch (e) { if (my === seq) items.replaceChildren(h('div', { class: 'callout warn small' }, e.message)); return; }
+    if (my !== seq) return;
+    const have = chosen();
+    const extra = [...have].filter(v => !vals.some(x => String(x.value).toLowerCase() === v.toLowerCase())).map(v => ({ value: v, count: null }));
+    const all = [...extra, ...vals];
+    items.replaceChildren(...all.map(x => {
+      const v = String(x.value);
+      const cb = h('input', { type: 'checkbox', checked: [...have].some(c => c.toLowerCase() === v.toLowerCase()), onchange: () => {
+        const set = chosen();
+        const hit = [...set].find(c => c.toLowerCase() === v.toLowerCase());
+        if (cb.checked && !hit) set.add(v); if (!cb.checked && hit) set.delete(hit);
+        const many = set.size > 1;
+        if (many && flt.op === 'eq') flt.op = 'in'; if (many && flt.op === 'neq') flt.op = 'not_in';
+        if (!many && flt.op === 'in') flt.op = 'eq'; if (!many && flt.op === 'not_in') flt.op = 'neq';
+        flt.value = [...set].join(', ');
+        btn.textContent = label(); changed = true;
+      } });
+      return h('label', { class: 'rc-pick-item' }, cb, h('span', null, v), x.count != null ? h('span', { class: 'faint small' }, x.count.toLocaleString()) : null);
+    }));
+    if (!all.length) items.append(h('div', { class: 'small muted', style: { padding: '8px 10px' } }, 'No values found.'));
+  };
+  let changed = false;
+  const label = () => { const n = chosen().size; return n ? `${n} picked ▾` : 'Pick ▾'; };
+  const close = () => { box.classList.add('hidden'); document.removeEventListener('mousedown', outside); if (changed) { changed = false; again(); } };
+  const outside = e => { if (!wrap.contains(e.target)) close(); };
+  const btn = h('button', { type: 'button', class: 'sm', title: 'Pick from the values in the data', onclick: () => {
+    if (!box.classList.contains('hidden')) return close();
+    box.classList.remove('hidden'); document.addEventListener('mousedown', outside); load(); q.focus();
+  } }, label());
+  box.append(h('div', { style: { padding: '6px' } }, q), items, h('div', { class: 'row', style: { padding: '6px', justifyContent: 'flex-end' } }, h('button', { type: 'button', class: 'sm primary', onclick: close }, 'Done')));
+  wrap.append(btn, box);
+  return wrap;
+}
+
+// Adds a condition on any field (linking its table in if needed). Text fields start as "is any of" so values can be ticked.
+function addCondPicker(d, list, again, placeholder) {
+  return fieldFinder(d, async (tk, fid) => {
+    let id;
+    try { id = await rcPlaceField(d, tk, fid); } catch (e) { toast(e.message, 'err'); return; }
+    const ops = RC.meta.ops[rcField(rcTable(tk), fid)?.kind] || RC.meta.ops.text;
+    list.push({ field: id, op: ops.includes('in') ? 'in' : ops[0], value: '' }); again();
+  }, { placeholder });
+}
+
 function filtersTab(body, d, editable, again) {
-  const s = d.spec, dis = !editable, scope = rcScope(s);
+  const s = d.spec, dis = !editable;
   const rows = h('div', { class: 'col' });
-  s.filters.forEach((flt, i) => {
-    const f = rcField(scope, flt.field);
-    const ops = RC.meta.ops[f?.kind] || RC.meta.ops.text;
-    if (!ops.includes(flt.op)) flt.op = ops[0];
-    const ph = f?.kind === 'date' ? (['last_days', 'next_days'].includes(flt.op) ? 'days' : 'YYYY-MM-DD') : ['in', 'not_in'].includes(flt.op) ? 'a, b, c' : 'value';
-    const valIn = k => h('input', { value: flt[k] ?? '', disabled: dis, placeholder: ph, onchange: e => { flt[k] = e.target.value; again(); } });
-    rows.append(h('div', { class: 'rc-row' },
-      h('span', { class: 'rc-filter-field', title: f?.label || flt.field }, f?.label || flt.field),
-      h('select', { disabled: dis, onchange: e => { flt.op = e.target.value; again(); } }, ops.map(o => h('option', { value: o, selected: flt.op === o }, OP_LABELS[o] || o))),
-      NO_VALUE.includes(flt.op) ? h('span') : h('span', { class: 'row' }, valIn('value'), flt.op === 'between' ? valIn('value2') : null),
-      dis ? null : h('button', { class: 'ghost sm', 'aria-label': 'Remove filter', onclick: () => { s.filters.splice(i, 1); rcPrune(d); again(); } }, icon('x', 14))));
-  });
+  s.filters.forEach((_, i) => rows.append(condRow(d, s.filters, i, dis, again)));
   if (!s.filters.length) rows.append(h('div', { class: 'small muted' }, 'No filters: every row is included.'));
-  body.append(
+  body.append(...[
     s.filters.length > 1 ? h('div', { class: 'row', style: { marginBottom: '8px' } }, h('span', { class: 'small muted' }, 'Rows must match'),
       h('select', { disabled: dis, class: 'sm', onchange: e => { s.match = e.target.value; again(); } }, h('option', { value: 'all', selected: s.match !== 'any' }, 'all filters'), h('option', { value: 'any', selected: s.match === 'any' }, 'any filter'))) : null,
     rows,
-    dis ? null : h('div', { style: { marginTop: '10px' } }, fieldFinder(d, async (tk, fid) => {
-      let id;
-      try { id = await rcPlaceField(d, tk, fid); } catch (e) { toast(e.message, 'err'); return; }
-      s.filters.push({ field: id, op: (RC.meta.ops[rcField(rcTable(tk), fid)?.kind] || RC.meta.ops.text)[0], value: '' }); again();
-    }, { placeholder: '+ Add a filter: search fields…' })),
-    h('p', { class: 'small faint', style: { marginBottom: 0 } }, 'Values can use {{customer}} and {{today}}.'),
+    dis ? null : h('div', { style: { marginTop: '10px' } }, addCondPicker(d, s.filters, again, '+ Add a filter: search fields…')),
+    h('p', { class: 'small faint', style: { marginBottom: 0 } }, 'Values can use {{customer}} and {{today}}. Use Pick to choose from the values in the data.'),
     h('label', { class: 'field', style: { marginTop: '12px', maxWidth: '260px' } }, 'Row limit',
-      h('input', { type: 'number', min: 1, disabled: dis, value: s.limit || '', placeholder: `all (max ${RC.meta.max_rows.toLocaleString()})`, onchange: e => { s.limit = Number(e.target.value) || null; again(); } })));
+      h('input', { type: 'number', min: 1, disabled: dis, value: s.limit || '', placeholder: `all (max ${RC.meta.max_rows.toLocaleString()})`, onchange: e => { s.limit = Number(e.target.value) || null; again(); } }))].filter(x => x != null));
+}
+
+// Rules the report is locked to, e.g. "Employee status must be Active". Unlike filters, these always all apply,
+// and customer reports made from a report type can't change them.
+function lockedCard(d, editable, again) {
+  const s = d.spec, dis = !editable;
+  s.locked = s.locked || [];
+  const rows = h('div', { class: 'col' });
+  s.locked.forEach((_, i) => rows.append(condRow(d, s.locked, i, dis, again)));
+  if (!s.locked.length) rows.append(h('div', { class: 'small muted' }, dis ? 'This report has no locked rules.' : 'No locked rules yet.'));
+  return h('div', { class: 'card', style: { marginBottom: '12px' } }, ...[
+    h('h2', null, 'Locked rules'),
+    h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Only rows that meet every rule here are ever in this report, its exports, emails and shared links. For example: Employee status must be Active.'),
+    rows,
+    dis ? null : h('div', { style: { marginTop: '8px' } }, addCondPicker(d, s.locked, again, '+ Lock a field: search fields…'))].filter(x => x != null));
 }
 
 function settingsTab(body, d, editable, again) {
