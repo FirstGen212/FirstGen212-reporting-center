@@ -79,7 +79,9 @@ function connectionNote() {
   const c = RC.meta.connection;
   if (!c.configured) return h('div', { class: 'callout warn', style: { marginBottom: '12px' } }, 'The database is not connected yet. An admin can add the connection under Settings, or set REPORTING_DB_URL on the server (a read-only database user is best).');
   if (c.error) return h('div', { class: 'callout warn', style: { marginBottom: '12px' } }, `Couldn't read the database: ${c.error}`);
-  if (!RC.meta.tables.length) return h('div', { class: 'callout warn', style: { marginBottom: '12px' } }, 'No tables are enabled for your role yet. An admin can enable them under Data settings.');
+  if (!RC.meta.tables.length) return h('div', { class: 'callout warn', style: { marginBottom: '12px' } }, c.found || c.no_access
+    ? `${c.found} table${c.found === 1 ? ' was' : 's were'} found in the database${c.no_access ? ` and ${c.no_access} can't be read yet` : ''}, but none are available to you. ${RC.meta.caps.manage ? 'Choose them under Data settings.' : 'An admin can enable them under Data settings.'}`
+    : 'No tables were found in the database. An admin can check Data settings.');
   return '';
 }
 
@@ -540,10 +542,17 @@ async function dataSettingsCard() {
   const save = async () => { await tryApi(() => api('PUT', '/api/rc/settings', pol), 'Data settings saved'); route(); };
   const wrap = h('div', { class: 'col', style: { gap: '14px' } });
   wrap.append(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Database'), h('span', { class: 'spacer' }),
-    h('button', { class: 'sm', onclick: async () => { const r = await tryApi(() => api('POST', '/api/rc/schema/refresh')); toast(`Found ${r.tables} tables`); route(); } }, icon('refresh', 14), 'Re-read tables & fields'),
+    h('button', { class: 'sm', onclick: async e => { e.target.disabled = true; e.target.textContent = 'Reading the database…'; try { const r = await tryApi(() => api('POST', '/api/rc/schema/refresh')); if (r) toast(`Found ${r.tables} tables${r.no_access ? `; ${r.no_access} more can't be read` : ''}`); } finally { route(); } } }, icon('refresh', 14), 'Re-read tables & fields'),
     h('button', { class: 'primary sm', onclick: save }, 'Save')),
-    h('p', { class: 'small muted', style: { margin: 0 } }, `Connected through ${RC.meta.connection.via === 'settings' ? 'the connection saved under Settings' : 'REPORTING_DB_URL'}. Fields were last read ${cfg.refreshed_at ? fdatetime(cfg.refreshed_at) : 'never'}. `,
-      'Every report runs as a read-only query with a time limit. For extra safety, point REPORTING_DB_URL at a database user that can only read.')));
+    h('p', { class: 'small muted', style: { margin: 0 } }, `Connected through ${RC.meta.connection.via === 'settings' ? 'the connection saved under Settings' : 'REPORTING_DB_URL'}${cfg.db_user ? ` as the database user ${cfg.db_user}` : ''}. `,
+      `Tables and fields were last read ${cfg.refreshed_at ? fdatetime(cfg.refreshed_at) : 'never'}, and are re-read every 6 hours. Report data itself is always read live when a report runs. `,
+      'Every report runs as a read-only query with a time limit.'),
+    cfg.error ? h('div', { class: 'callout warn', style: { marginTop: '10px' } }, `Couldn't read the database: ${cfg.error}`) : '',
+    cfg.no_access.length ? h('div', { class: 'callout warn', style: { marginTop: '10px' } },
+      h('div', null, h('b', null, `${cfg.no_access.length} table${cfg.no_access.length === 1 ? '' : 's'} can't be read by ${cfg.db_user || 'this database user'}: `), cfg.no_access.slice(0, 12).join(', '), cfg.no_access.length > 12 ? ` and ${cfg.no_access.length - 12} more` : '', '.'),
+      h('div', { style: { marginTop: '6px' } }, 'To allow them, run this in the Supabase SQL editor, then click Re-read:'),
+      h('pre', { style: { whiteSpace: 'pre-wrap', margin: '6px 0 0', userSelect: 'all' } },
+        [...new Set(cfg.no_access.map(k => k.split('.')[0]))].map(sc => `GRANT USAGE ON SCHEMA ${sc} TO ${cfg.db_user || 'reporting_ro'};\nGRANT SELECT ON ALL TABLES IN SCHEMA ${sc} TO ${cfg.db_user || 'reporting_ro'};`).join('\n'))) : ''));
   const tablesBox = h('div', { class: 'card' }, h('h2', null, 'Tables reports can use'), h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Untick a table to hide it from the Reporting Center. Open a table to hide individual fields; fields that look like SSNs, birth dates, passwords or bank details are hidden until you allow them.'));
   for (const t of cfg.tables) {
     const on = pol.tables.includes(t.key);
@@ -556,7 +565,8 @@ async function dataSettingsCard() {
       h('input', { type: 'checkbox', checked: on, onchange: e => { pol.tables = e.target.checked ? [...pol.tables, t.key] : pol.tables.filter(x => x !== t.key); } }),
       h('b', null, t.key), h('span', { class: 'small muted' }, ` ${t.view ? 'view · ' : ''}${rowsEst(t.est_rows)} · ${t.fields.length} fields · ${t.fields.filter(f => f.hidden).length} hidden`))), fields));
   }
-  if (!cfg.tables.length) tablesBox.append(h('div', { class: 'empty' }, 'No tables found. Check the connection, then re-read.'));
+  if (!cfg.tables.length) tablesBox.append(h('div', { class: 'empty' }, cfg.no_access.length ? 'No tables can be read yet. See the note above.' : 'No tables found. Check the connection, then re-read.'));
+  else if (!pol.tables.length) tablesBox.append(h('div', { class: 'callout', style: { marginBottom: '8px' } }, 'None of these tables are ticked yet. Tick the ones reports should use and click Save.'));
   const roles = h('div', { class: 'card' }, h('h2', null, 'Table access by role'), h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Admins see every enabled table. A role set to "All enabled tables" sees everything ticked above. What each role can do is set under Users & roles.'));
   for (const r of cfg.roles) {
     const limited = Array.isArray(pol.role_tables[r.id]);

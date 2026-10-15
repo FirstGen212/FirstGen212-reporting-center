@@ -120,7 +120,14 @@ async function introspect() {
       } catch (e) { col.json_fields = []; col.json_error = e.message; }
     }
   }
-  const schema = { refreshed_at: new Date().toISOString(), tables: [...tables.values()] };
+  // Tables that exist but this database user can't read (information_schema leaves them out), so the screen can say why.
+  const { rows: hiddenRows } = await readOnly(
+    `SELECT n.nspname AS schema, c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('r','v','m','p') AND n.nspname <> ALL($1::text[]) AND n.nspname NOT LIKE 'pg\\_%'
+        AND NOT has_table_privilege(c.oid, 'SELECT') ORDER BY 1, 2`, [SYSTEM_SCHEMAS]).catch(() => ({ rows: [] }));
+  const { rows: [who] } = await readOnly('SELECT current_user AS u').catch(() => ({ rows: [{}] }));
+  const schema = { refreshed_at: new Date().toISOString(), source: sourceKey(), db_user: who?.u || null,
+    tables: [...tables.values()], no_access: hiddenRows.map(r => `${r.schema}.${r.name}`) };
   setSetting('rc_schema', schema);
   return schema;
 }
@@ -128,9 +135,13 @@ const safeParse = s => { try { return JSON.parse(s); } catch { return null; } };
 const qi = name => '"' + String(name).replace(/"/g, '""') + '"';
 
 /** The last discovered schema (kept in settings so the screen works without hitting the database each time). */
-const cachedSchema = () => getSetting('rc_schema', null);
+// Tied to the connection it came from, so pointing the app at a different database re-reads it. An empty result isn't kept.
+const sourceKey = () => require('crypto').createHash('sha256').update(String(connectionString() || '')).digest('hex').slice(0, 16);
+const cachedSchema = () => { const s = getSetting('rc_schema', null); return s && s.source === sourceKey() && s.tables?.length ? s : null; };
+const SCHEMA_MAX_AGE_MS = 6 * 3600 * 1000;
+const schemaStale = () => { const s = cachedSchema(); return !s || Date.now() - Date.parse(s.refreshed_at) > SCHEMA_MAX_AGE_MS; };
 
 /** Forget the open connection and the discovered schema (after the connection string changes). */
 function reset() { if (pool) pool.end().catch(() => {}); pool = null; poolKey = null; setSetting('rc_schema', null); }
 
-module.exports = { reset, readOnly, introspect, cachedSchema, connectionString, collectPaths, qi, SYSTEM_SCHEMAS };
+module.exports = { reset, readOnly, introspect, cachedSchema, schemaStale, connectionString, collectPaths, qi, SYSTEM_SCHEMAS };
