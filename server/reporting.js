@@ -304,7 +304,8 @@ function mount(app, { requireUser, requireCap, wrap }) {
     const reports = all('SELECT r.*, u.name AS owner_name, t.name AS type_name FROM rc_reports r LEFT JOIN users u ON u.id = r.owner_id LEFT JOIN rc_reports t ON t.id = r.type_id ORDER BY r.kind DESC, r.name')
       .map(rowOut).filter(r => canSee(req, r)).map(r => ({ ...r, can_edit: !!canEdit(req, r) }));
     res.json({
-      connection: { configured, via: process.env.REPORTING_DB_URL ? 'REPORTING_DB_URL' : 'settings', error, refreshed_at: s?.refreshed_at || null },
+      connection: { configured, via: process.env.REPORTING_DB_URL ? 'REPORTING_DB_URL' : 'settings', error, refreshed_at: s?.refreshed_at || null,
+        found: s?.tables?.length || 0, no_access: s?.no_access?.length || 0, db_user: s?.db_user || null },
       caps: { build: can(req, 'build_reports'), schedule: can(req, 'schedule_reports'), share: can(req, 'share_reports'), manage: can(req, 'manage_reporting_data'), admin: !!req.perms.is_admin },
       tables, reports, ops: Q.OPS, rules: A.RULES, max_rows: Q.MAX_ROWS, pdf_max_rows: X.PDF_MAX_ROWS, timezone: tz(),
       internal_emails: [...userEmails()],
@@ -549,13 +550,14 @@ function mount(app, { requireUser, requireCap, wrap }) {
 
   // data settings
   app.get('/api/rc/settings', requireUser, requireCap('manage_reporting_data'), wrap(async (req, res) => {
-    const s = source.connectionString() ? await schema().catch(() => null) : null;
+    let schemaError = source.connectionString() ? null : 'The database is not connected.';
+    const s = source.connectionString() ? await schema().catch(e => { schemaError = e.message; return null; }) : null;
     const pol = policy();
     res.json({ policy: pol, roles: all('SELECT id, name FROM roles ORDER BY id'),
       tables: (s?.tables || []).map(t => ({ key: t.key, schema: t.schema, name: t.name, view: t.view, est_rows: t.est_rows,
         enabled: pol.tables ? pol.tables.includes(t.key) : t.schema === 'public',
         fields: Q.fieldsOf(t).map(f => ({ id: f.id, label: f.label, kind: f.kind, fill: f.fill, json: f.path.length > 0, hidden: Q.isHidden(pol, f.id) })) })),
-      refreshed_at: s?.refreshed_at || null });
+      refreshed_at: s?.refreshed_at || null, db_user: s?.db_user || null, no_access: s?.no_access || [], error: s ? null : schemaError });
   }));
   app.put('/api/rc/settings', requireUser, requireCap('manage_reporting_data'), wrap(async (req, res) => {
     const b = req.body, cur = policy();
@@ -568,7 +570,7 @@ function mount(app, { requireUser, requireCap, wrap }) {
   }));
   app.post('/api/rc/schema/refresh', requireUser, requireCap('manage_reporting_data'), wrap(async (req, res) => {
     const s = await schema({ refresh: true });
-    res.json({ tables: s.tables.length, refreshed_at: s.refreshed_at });
+    res.json({ tables: s.tables.length, no_access: s.no_access?.length || 0, refreshed_at: s.refreshed_at });
   }));
 
   // public share pages (no sign-in; the unguessable, expiring token is the key)

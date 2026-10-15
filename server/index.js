@@ -233,6 +233,17 @@ reporting.mount(app, { requireUser, requireCap, wrap });
 
 // ---------------------------------------------------------------- scheduler: due report emails, checked every minute
 setInterval(() => reporting.tick().catch(e => console.error('[scheduler]', e)), 60 * 1000).unref?.();
+// Keep the list of tables and fields in step with the database: on start, then whenever it is over 6 hours old.
+let reading = false;
+const syncSchema = async () => {
+  if (reading || !source.connectionString() || !source.schemaStale()) return;
+  reading = true;
+  try { const s = await source.introspect(); console.log(`[reporting] read ${s.tables.length} tables from the database as ${s.db_user}${s.no_access.length ? `; ${s.no_access.length} more it cannot read` : ''}`); }
+  catch (e) { console.error('[reporting] reading tables failed:', e.message); }
+  finally { reading = false; }
+};
+setTimeout(syncSchema, 2000);
+setInterval(syncSchema, 10 * 60 * 1000).unref?.();
 
 app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(FRONTEND_DIR, 'index.html')));
 
