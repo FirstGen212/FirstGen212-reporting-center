@@ -62,7 +62,7 @@ async function schema({ refresh = false } = {}) {
   return s;
 }
 function enabledTables(s, pol = policy()) {
-  return (s?.tables || []).filter(t => (pol.tables ? pol.tables.includes(t.key) : t.schema === 'public'));
+  return (s?.tables || []).filter(t => (pol.tables ? pol.tables.includes(t.key) : t.schema === 'public' && !t.name.startsWith('_')));
 }
 function tablesFor(req, s) {
   const pol = policy();
@@ -608,7 +608,7 @@ function mount(app, { requireUser, requireCap, wrap }) {
     const pol = policy();
     res.json({ policy: pol, roles: all('SELECT id, name FROM roles ORDER BY id'),
       tables: (s?.tables || []).map(t => ({ key: t.key, schema: t.schema, name: t.name, view: t.view, est_rows: t.est_rows,
-        enabled: pol.tables ? pol.tables.includes(t.key) : t.schema === 'public',
+        enabled: pol.tables ? pol.tables.includes(t.key) : t.schema === 'public' && !t.name.startsWith('_'),
         fields: Q.fieldsOf(t).map(f => ({ id: f.id, label: f.label, kind: f.kind, fill: f.fill, json: f.path.length > 0, hidden: Q.isHidden(pol, f.id) })) })),
       refreshed_at: s?.refreshed_at || null, db_user: s?.db_user || null, no_access: s?.no_access || [], error: s ? null : schemaError });
   }));

@@ -60,7 +60,7 @@ function scope(spec, lookup) {
     const p = parts.find(x => x.id === jid);
     if (!p) { const e = new Error(`"${id}" comes from a table that isn't linked to this report`); e.status = 400; throw e; }
     const f = resolveField(p.table, fid, known.get(jid));
-    return { ...f, id: String(id), base_id: f.id, alias: p.alias, label: jid ? `${tableLabel(p.table)} › ${f.label}` : f.label };
+    return { ...f, id: String(id), base_id: f.id, alias: p.alias, short: f.label, label: jid ? `${tableLabel(p.table)} › ${f.label}` : f.label };
   };
   return { base, parts, resolve };
 }
@@ -216,7 +216,7 @@ function compile(spec, { table, lookup, policy, customer = null, today = new Dat
     else if (agg) sql = `${agg}(${f.kind === 'number' || f.kind === 'date' ? e.typed : e.text})`;
     else sql = f.kind === 'list' || f.kind === 'json' ? e.raw : (f.kind === 'text' ? e.text : e.typed);
     const aggLabel = { count: 'Count of ', count_distinct: 'Distinct ', sum: 'Total ', avg: 'Average ', min: 'Min ', max: 'Max ' }[agg] || '';
-    out.push({ key: `c${i}`, label: c.label || aggLabel + f.label, kind, agg, field: f.id });
+    out.push({ key: `c${i}`, label: c.label || aggLabel + (f.short || f.label), kind, agg, field: f.id });
     return `${sql} AS "c${i}"`;
   });
   const grouped = out.some(c => c.agg);
