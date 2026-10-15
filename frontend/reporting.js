@@ -524,7 +524,16 @@ async function dataSettingsCard() {
       h('option', { value: 'all', selected: !limited }, 'All enabled tables'), h('option', { value: 'some', selected: limited }, 'Only these tables'))), box);
     draw();
   }
-  wrap.append(tablesBox, roles);
+  // Every field hidden right now, in one place, so a birth date or similar can be allowed without opening each table.
+  const hiddenNow = cfg.tables.filter(t => pol.tables.includes(t.key)).flatMap(t => t.fields.filter(f => f.hidden).map(f => ({ t, f })));
+  const hiddenBox = h('div', { class: 'card' }, h('h2', null, `Hidden fields (${hiddenNow.length})`),
+    h('p', { class: 'small muted', style: { marginTop: 0 } }, 'These fields are kept out of reports. Fields that look like birth dates, SSNs, passwords or bank details start hidden. Tick a field to allow it in reports, then click Save.'),
+    hiddenNow.length ? h('div', { class: 'form-grid' }, hiddenNow.map(({ t, f }) => h('label', { class: 'check small' },
+      h('input', { type: 'checkbox', onchange: e => {
+        pol.hidden = pol.hidden.filter(x => x !== f.id); pol.unhidden = pol.unhidden.filter(x => x !== f.id);
+        (e.target.checked ? pol.unhidden : pol.hidden).push(f.id);
+      } }), `${f.label} `, h('span', { class: 'faint' }, `${t.key.replace(/^public\./, '')} · ${f.id}`)))) : h('div', { class: 'small muted' }, 'No fields are hidden.'));
+  wrap.append(hiddenBox, tablesBox, roles);
   return wrap;
 }
 
