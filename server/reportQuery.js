@@ -9,7 +9,10 @@
 //   latest:    { key: 'airtable_id', order: 'captured_at', as_of: '2026-09-30' | '' }   one row per key: its newest version
 //   sort:      [{ col: 0, dir: 'asc' | 'desc' }]   (col is a position in columns)
 //   limit:     number | null
-// Field ids are a column name, or a JSON column followed by a key path: 'fields.company.0.label'.
+//   joins:     [{ id: 'j1', table: 'public.census_company_directory', on: { left: 'fields.company.0.id', right: 'airtable_id' },
+//                 keep_unmatched: true, latest?: { key, order, as_of } }]   other tables linked in by matching values
+// Field ids are a column name, or a JSON column followed by a key path: 'fields.company.0.label'. A field from a linked
+// table carries its join id: 'j1:name'.
 const { qi } = require('./reportSource');
 
 const MAX_ROWS = Number(process.env.REPORT_MAX_ROWS) || 100000;
@@ -43,7 +46,32 @@ function resolveField(table, id, known = fieldsOf(table)) {
   const e = new Error(`"${id}" is not a field of ${table.name}`); e.status = 400; throw e;
 }
 
+const splitId = id => { const m = /^(j\d{1,2}):(.+)$/.exec(String(id)); return m ? [m[1], m[2]] : [null, String(id)]; };
+const tableLabel = t => humanize(t.name);
+
+/** The tables a report reads (its main table plus linked ones) and how to resolve any field id against them. */
+function scope(spec, lookup) {
+  const base = lookup(spec.table);
+  const parts = [{ id: null, alias: 't', table: base }];
+  for (const j of spec.joins || []) parts.push({ id: j.id, alias: j.id, table: lookup(j.table), join: j });
+  const known = new Map(parts.map(p => [p.id, fieldsOf(p.table)]));
+  const resolve = id => {
+    const [jid, fid] = splitId(id);
+    const p = parts.find(x => x.id === jid);
+    if (!p) { const e = new Error(`"${id}" comes from a table that isn't linked to this report`); e.status = 400; throw e; }
+    const f = resolveField(p.table, fid, known.get(jid));
+    return { ...f, id: String(id), base_id: f.id, alias: p.alias, label: jid ? `${tableLabel(p.table)} › ${f.label}` : f.label };
+  };
+  return { base, parts, resolve };
+}
+/** A table lookup from compile/audit options: an explicit lookup, or the single table given. */
+function lookupFrom({ lookup, table }) {
+  if (lookup) return lookup;
+  return key => { if (table && (!key || key === table.key || key === `${table.schema}.${table.name}`)) return table; const e = new Error(`Unknown table "${key}"`); e.status = 400; throw e; };
+}
+
 const isHidden = (policy, id) => {
+  id = splitId(id)[1];
   const hidden = policy?.hidden || [], shown = policy?.unhidden || [];
   const parts = String(id).split('.');
   for (let i = parts.length; i > 0; i--) { const p = parts.slice(0, i).join('.'); if (hidden.includes(p)) return true; if (shown.includes(p)) return false; }
@@ -89,32 +117,46 @@ function emptySQL(e) {
   return `(${e.typed} IS NULL)`;
 }
 
-function compile(spec, { table, policy, customer = null, today = new Date().toISOString().slice(0, 10), limit, forAudit = null } = {}) {
-  if (!table) { const e = new Error('Pick a table to report on'); e.status = 400; throw e; }
-  const known = fieldsOf(table);
+function compile(spec, { table, lookup, policy, customer = null, today = new Date().toISOString().slice(0, 10), limit, forAudit = null } = {}) {
+  if (!spec.table && !table) { const e = new Error('Pick a table to report on'); e.status = 400; throw e; }
+  const sc = scope({ ...spec, table: spec.table || table.key }, lookupFrom({ lookup, table }));
+  table = sc.base;
   const field = id => {
-    const f = resolveField(table, id, known);
-    if (isHidden(policy, f.id)) { const e = new Error(`"${f.label}" is restricted and can't be used in reports`); e.status = 403; throw e; }
+    const f = sc.resolve(id);
+    if (isHidden(policy, f.base_id)) { const e = new Error(`"${f.label}" is restricted and can't be used in reports`); e.status = 403; throw e; }
     return f;
   };
   const params = [];
   const P = v => { params.push(v); return `$${params.length}`; };
   const fill = v => (typeof v === 'string' ? v.replace(/\{\{\s*customer\s*\}\}/gi, customer ?? '').replace(/\{\{\s*today\s*\}\}/gi, today) : v);
 
-  // ---- FROM (optionally the newest row per key, as of a date)
-  let from = `${qi(table.schema)}.${qi(table.name)} t`;
-  if (spec.latest?.key && spec.latest?.order) {
-    const k = expr(field(spec.latest.key), 't0'), o = expr(field(spec.latest.order), 't0');
-    const asOf = fill(spec.latest.as_of || '');
-    const where = asOf ? ` WHERE ${o.kind === 'date' && !field(spec.latest.order).path.length ? o.raw : o.typed} < (${P(asOf)}::date + INTERVAL '1 day')` : '';
-    from = `(SELECT DISTINCT ON (${k.text}) t0.* FROM ${qi(table.schema)}.${qi(table.name)} t0${where} ORDER BY ${k.text}, ${o.typed} DESC NULLS LAST) t`;
-  }
+  // ---- FROM (each table optionally reduced to the newest row per key, as of a date), then the linked tables
+  const source = (tbl, latest, alias, prefix) => {
+    const name = `${qi(tbl.schema)}.${qi(tbl.name)}`;
+    if (!latest?.key || !latest?.order) return `${name} ${alias}`;
+    const kf = field(prefix + latest.key), of = field(prefix + latest.order);
+    const k = expr(kf, 't0'), o = expr(of, 't0');
+    const asOf = fill(latest.as_of || '');
+    const where = asOf ? ` WHERE ${o.kind === 'date' && !of.path.length ? o.raw : o.typed} < (${P(asOf)}::date + INTERVAL '1 day')` : '';
+    return `(SELECT DISTINCT ON (${k.text}) t0.* FROM ${name} t0${where} ORDER BY ${k.text}, ${o.typed} DESC NULLS LAST) ${alias}`;
+  };
+  let from = source(table, spec.latest, 't', '');
+  sc.parts.slice(1).forEach((p, i) => {
+    const j = p.join;
+    if (!j.on?.left || !j.on?.right) { const e = new Error(`Choose how ${tableLabel(p.table)} links to the report`); e.status = 400; throw e; }
+    const L = field(j.on.left), R = field(`${p.id}:${j.on.right}`);
+    if (L.alias === p.alias || (L.alias !== 't' && sc.parts.findIndex(x => x.alias === L.alias) > i)) { const e = new Error(`${tableLabel(p.table)} must link to a table listed before it`); e.status = 400; throw e; }
+    const le = expr(L, L.alias), re = expr(R, R.alias);
+    // Plain columns of the same type compare directly (so indexes still help); anything else compares as text.
+    const on = !L.path.length && !R.path.length && L.kind === R.kind && L.kind !== 'json' ? `${le.raw} = ${re.raw}` : `${le.text} = ${re.text}`;
+    from += ` ${j.keep_unmatched === false ? 'JOIN' : 'LEFT JOIN'} ${source(p.table, j.latest, p.alias, p.id + ':')} ON ${on}`;
+  });
 
   // ---- WHERE
   const conds = [];
   for (const flt of spec.filters || []) {
     if (!flt?.field || !flt.op) continue;
-    const f = field(flt.field), e = expr(f);
+    const f = field(flt.field), e = expr(f, f.alias);
     const allowed = OPS[f.kind] || OPS.text;
     if (!allowed.includes(flt.op)) { const err = new Error(`"${flt.op}" can't be used on ${f.label}`); err.status = 400; throw err; }
     const v = fill(flt.value), v2 = fill(flt.value2);
@@ -152,7 +194,8 @@ function compile(spec, { table, policy, customer = null, today = new Date().toIS
   }
   let where = conds.length ? `(${conds.join(spec.match === 'any' ? ' OR ' : ' AND ')})` : '';
   if (spec.customer_field && customer != null && customer !== '') {
-    const c = `lower(${expr(field(spec.customer_field)).text}) = lower(${P(String(customer))})`;
+    const cf = field(spec.customer_field);
+    const c = `lower(${expr(cf, cf.alias).text}) = lower(${P(String(customer))})`;
     where = where ? `${where} AND ${c}` : c;
   }
 
@@ -165,7 +208,7 @@ function compile(spec, { table, policy, customer = null, today = new Date().toIS
   const select = cols.map((c, i) => {
     const agg = forAudit ? null : (c.agg && AGG[c.agg] ? c.agg : null);
     if (c.field === '*') { out.push({ key: `c${i}`, label: c.label || 'Count', kind: 'number', agg: 'count', field: '*' }); return `count(*) AS "c${i}"`; }
-    const f = field(c.field), e = expr(f);
+    const f = field(c.field), e = expr(f, f.alias);
     let sql, kind = f.kind;
     if (agg === 'count') { sql = `count(${e.raw})`; kind = 'number'; }
     else if (agg === 'count_distinct') { sql = `count(DISTINCT ${e.text})`; kind = 'number'; }
@@ -201,4 +244,4 @@ function normalizeRows(rows, columns) {
   }));
 }
 
-module.exports = { compile, normalizeRows, fieldsOf, resolveField, isHidden, OPS, MAX_ROWS, humanize };
+module.exports = { compile, normalizeRows, fieldsOf, resolveField, isHidden, scope, expr, lookupFrom, splitId, tableLabel, OPS, MAX_ROWS, humanize };

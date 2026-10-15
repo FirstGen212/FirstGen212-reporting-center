@@ -125,9 +125,17 @@ async function introspect() {
     `SELECT n.nspname AS schema, c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE c.relkind IN ('r','v','m','p') AND n.nspname <> ALL($1::text[]) AND n.nspname NOT LIKE 'pg\\_%'
         AND NOT has_table_privilege(c.oid, 'SELECT') ORDER BY 1, 2`, [SYSTEM_SCHEMAS]).catch(() => ({ rows: [] }));
+  // Single-column foreign keys, the surest way to know how two tables link.
+  const { rows: fks } = await readOnly(
+    `SELECT cn.nspname || '.' || c.relname AS "from", a.attname AS from_col, fn.nspname || '.' || f.relname AS "to", fa.attname AS to_col
+       FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace cn ON cn.oid = c.relnamespace
+       JOIN pg_class f ON f.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = f.relnamespace
+       JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = k.conkey[1]
+       JOIN pg_attribute fa ON fa.attrelid = k.confrelid AND fa.attnum = k.confkey[1]
+      WHERE k.contype = 'f' AND array_length(k.conkey, 1) = 1`).catch(() => ({ rows: [] }));
   const { rows: [who] } = await readOnly('SELECT current_user AS u').catch(() => ({ rows: [{}] }));
   const schema = { refreshed_at: new Date().toISOString(), source: sourceKey(), db_user: who?.u || null,
-    tables: [...tables.values()], no_access: hiddenRows.map(r => `${r.schema}.${r.name}`) };
+    tables: [...tables.values()], no_access: hiddenRows.map(r => `${r.schema}.${r.name}`), links: fks };
   setSetting('rc_schema', schema);
   return schema;
 }

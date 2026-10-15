@@ -34,3 +34,24 @@ test('newest row per record as of a date', () => {
   assert.match(q.sql, /DISTINCT ON \(t0\."airtable_id"\)/);
   assert.deepStrictEqual(q.params, ['2026-09-30']);
 });
+
+const directory = { schema: 'public', name: 'census_company_directory', key: 'public.census_company_directory', columns: [
+  { name: 'id', type: 'integer', kind: 'number' }, { name: 'airtable_id', type: 'text', kind: 'text' }, { name: 'csm', type: 'text', kind: 'text' }] };
+const lookup = key => ({ 'public.census_snapshot_history': table, 'public.census_company_directory': directory })[key] || (() => { throw new Error('no table ' + key); })();
+const joined = { ...base, joins: [{ id: 'j1', table: 'public.census_company_directory', on: { left: 'fields.company.0.id', right: 'airtable_id' }, keep_unmatched: true }],
+  columns: [{ field: 'fields.company.0.label' }, { field: 'j1:csm' }], filters: [{ field: 'j1:csm', op: 'eq', value: 'Ann' }] };
+test('fields from a linked table', () => {
+  const q = Q.compile(joined, { lookup });
+  assert.match(q.sql, /LEFT JOIN "public"\."census_company_directory" j1 ON \(t\."fields" #>> '\{company,0,id\}'\) = j1\."airtable_id"/);
+  assert.match(q.sql, /SELECT \(t\."fields" #>> '\{company,0,label\}'\) AS "c0", j1\."csm" AS "c1"/);
+  assert.match(q.sql, /lower\(j1\."csm"\) = lower\(\$1\)/);
+  assert.strictEqual(q.columns[1].label, 'Census Company Directory › Csm');
+});
+test('linked tables: only matching rows, and errors for unknown links', () => {
+  const q = Q.compile({ ...joined, joins: [{ ...joined.joins[0], keep_unmatched: false }] }, { lookup });
+  assert.match(q.sql, / JOIN "public"\."census_company_directory" j1/);
+  assert.doesNotMatch(q.sql, /LEFT JOIN/);
+  assert.throws(() => Q.compile({ ...joined, columns: [{ field: 'j2:csm' }] }, { lookup }), /isn't linked/);
+  assert.throws(() => Q.compile({ ...joined, joins: [{ ...joined.joins[0], on: { left: 'j1:csm', right: 'csm' } }] }, { lookup }), /listed before/);
+  assert.throws(() => Q.compile({ ...joined, columns: [{ field: 'j1:ssn' }] }, { lookup }), /not a field/);
+});
