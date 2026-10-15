@@ -3,7 +3,7 @@
 //   { field: 'fields.employeeId', label: 'Employee ID', rule: 'required' | 'email' | 'phone' | 'date' | 'number'
 //     | 'one_of' | 'regex' | 'min_length', arg: '...', severity: 'critical' | 'warning' }
 // Critical problems can hold an export back (the report's audit mode is 'block'); warnings are listed only.
-const { compile, normalizeRows, resolveField, fieldsOf } = require('./reportQuery');
+const { compile, normalizeRows, scope, lookupFrom } = require('./reportQuery');
 const { readOnly } = require('./reportSource');
 
 const AUDIT_MAX_ROWS = Number(process.env.REPORT_AUDIT_MAX_ROWS) || 50000;
@@ -39,17 +39,17 @@ function check(rule, v) {
  * Run the audit for a report definition. Returns per-rule counts, a per-customer breakdown, fill rates for every
  * column in the report, and the rows that need fixing (each with the values that identify it).
  */
-async function audit(spec, required, { table, policy, customer = null, today } = {}) {
+async function audit(spec, required, { table, lookup, policy, customer = null, today } = {}) {
   const rules = (required || []).filter(r => r?.field).map(r => ({ ...r, rule: RULES[r.rule] ? r.rule : 'required', severity: r.severity === 'warning' ? 'warning' : 'critical' }));
-  const known = fieldsOf(table);
+  const sc = scope({ ...spec, table: spec.table || table?.key }, lookupFrom({ lookup, table }));
   const named = Object.fromEntries((spec.columns || []).filter(c => c.field && c.label && !c.agg).map(c => [c.field, c.label]));
-  const label = id => (id === '*' ? 'Count' : named[id] || resolveField(table, id, known).label);
+  const label = id => (id === '*' ? 'Count' : named[id] || sc.resolve(id).label);
   const reportFields = (spec.columns || []).filter(c => c.field && c.field !== '*' && !c.agg).map(c => c.field);
   const idFields = (spec.audit_ids?.length ? spec.audit_ids : reportFields.filter(f => f !== spec.customer_field && !rules.some(r => r.field === f)).slice(0, 2)).filter(Boolean);
   const fields = [...new Set([...(spec.customer_field ? [spec.customer_field] : []), ...idFields, ...rules.map(r => r.field), ...reportFields])];
   if (!fields.length) { const e = new Error('Add columns or required fields to audit'); e.status = 400; throw e; }
 
-  const q = compile(spec, { table, policy, customer, today, limit: AUDIT_MAX_ROWS, forAudit: fields });
+  const q = compile(spec, { table, lookup, policy, customer, today, limit: AUDIT_MAX_ROWS, forAudit: fields });
   const started = Date.now();
   const res = await readOnly(q.sql, q.params);
   const truncated = res.rows.length > q.cap;

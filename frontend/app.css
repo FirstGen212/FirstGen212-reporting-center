@@ -282,3 +282,11 @@ table.t th.sortable .sort-arrow { font-size: 10px; }
 @media (max-width: 1100px) { .rc-grid { grid-template-columns: 1fr; } }
 .grid-2 > .card + .card, .grid-3 > .card + .card { margin-top: 0; }
 .tabs { overflow-x: auto; }
+
+.rc-finder { position: relative; }
+.rc-finder input { width: 100%; }
+.rc-finder-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 320px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.rc-finder-item { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; padding: 7px 10px; }
+.rc-finder-item:hover, .rc-finder-item:focus { background: var(--accent-2); }
+.rc-join { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); }
+.rc-join.warn { border-color: var(--warn); }

@@ -75,6 +75,15 @@ async function tableFor(req, key) {
   if (!t) throw httpErr(403, `You don't have access to the table "${key}", or it isn't enabled for reporting`);
   return t;
 }
+/** Find a table the user may report on, by key. Every table a report touches (main and linked) goes through this. */
+async function lookupFor(req) {
+  const list = tablesFor(req, await schema());
+  return key => {
+    const t = list.find(x => x.key === key);
+    if (!t) throw httpErr(403, `You don't have access to the table "${key}", or it isn't enabled for reporting`);
+    return t;
+  };
+}
 const publicFields = t => { const pol = policy(); return Q.fieldsOf(t).filter(f => !Q.isHidden(pol, f.id)).map(f => ({ id: f.id, label: f.label, kind: f.kind, fill: f.fill, json: f.path.length > 0 })); };
 
 // ---------------------------------------------------------------- reports
@@ -106,8 +115,13 @@ function cleanSpec(spec = {}) {
     sort: (spec.sort || []).slice(0, 5).map(s => ({ col: Number(s.col), dir: s.dir === 'desc' ? 'desc' : 'asc' })).filter(s => Number.isInteger(s.col)),
     limit: Number(spec.limit) > 0 ? Math.min(Q.MAX_ROWS, Number(spec.limit)) : null,
     customer_field: spec.customer_field ? String(spec.customer_field) : null,
+    joins: (spec.joins || []).filter(j => j?.table).slice(0, 6).map((j, i) => ({
+      id: /^j\d{1,2}$/.test(j.id) ? j.id : `j${i + 1}`, table: String(j.table),
+      on: { left: String(j.on?.left || ''), right: String(j.on?.right || '') }, keep_unmatched: j.keep_unmatched !== false,
+      latest: j.latest?.key && j.latest?.order ? { key: String(j.latest.key), order: String(j.latest.order), as_of: String(j.latest.as_of || '') } : null })),
     audit_ids: (spec.audit_ids || []).filter(Boolean).slice(0, 3).map(String),
   };
+  if (new Set(s.joins.map(j => j.id)).size !== s.joins.length) throw httpErr(400, 'Each linked table needs its own id');
   return s;
 }
 const cleanRequired = list => (list || []).filter(r => r?.field).slice(0, 60).map(r => ({ field: String(r.field), label: r.label ? String(r.label).slice(0, 120) : undefined,
@@ -115,8 +129,7 @@ const cleanRequired = list => (list || []).filter(r => r?.field).slice(0, 60).ma
 
 const today = () => todayISO();
 async function execute(req, spec, { customer = null, limit } = {}) {
-  const table = await tableFor(req, spec.table);
-  const q = Q.compile(spec, { table, policy: policy(), customer, today: today(), limit });
+  const q = Q.compile(spec, { lookup: await lookupFor(req), policy: policy(), customer, today: today(), limit });
   const started = Date.now();
   const res = await source.readOnly(q.sql, q.params);
   const truncated = res.rows.length > q.cap;
@@ -124,8 +137,7 @@ async function execute(req, spec, { customer = null, limit } = {}) {
   return { columns: q.columns.map(c => ({ label: c.label, kind: c.kind, field: c.field, agg: c.agg || null })), rows, truncated, ms: Date.now() - started, sql: req.perms.is_admin ? { text: q.sql, params: q.params } : undefined };
 }
 async function runAudit(req, r, customer) {
-  const table = await tableFor(req, r.spec.table);
-  return A.audit(r.spec, r.required, { table, policy: policy(), customer, today: today() });
+  return A.audit(r.spec, r.required, { lookup: await lookupFor(req), policy: policy(), customer, today: today() });
 }
 function logRun(row) {
   run('INSERT INTO rc_runs(report_id, schedule_id, share_id, trigger, format, customer, rows, status, error, audit, user_id, ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -318,10 +330,50 @@ function mount(app, { requireUser, requireCap, wrap }) {
   }));
   app.post('/api/rc/values', ...view, wrap(async (req, res) => {
     const table = await tableFor(req, String(req.body.table || ''));
-    const spec = cleanSpec({ table: table.key, latest: req.body.latest, columns: [{ field: String(req.body.field) }, { field: '*', agg: 'count' }],
+    const spec = cleanSpec({ table: table.key, latest: req.body.latest, joins: req.body.joins, columns: [{ field: String(req.body.field) }, { field: '*', agg: 'count' }],
       filters: req.body.q ? [{ field: String(req.body.field), op: 'contains', value: String(req.body.q) }] : [], sort: [{ col: 1, dir: 'desc' }], limit: 300 });
     const out = await execute(req, spec, { limit: 300 });
     res.json(out.rows.filter(r => r[0] != null && r[0] !== '').map(r => ({ value: r[0], count: r[1] })));
+  }));
+
+  // How a table could link to a report: foreign keys first, then id-like fields whose values actually match.
+  app.post('/api/rc/link-suggest', ...view, wrap(async (req, res) => {
+    const lookup = await lookupFor(req), pol = policy();
+    const spec = cleanSpec(req.body.spec);
+    const sc = Q.scope(spec, lookup), target = lookup(String(req.body.table || ''));
+    const links = (await schema()).links || [];
+    const norm = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const last = f => norm([...f.path.length ? f.path : [f.column]].filter(x => !/^\d+$/.test(x)).pop() || f.column);
+    const idLike = f => ['text', 'number'].includes(f.kind) && /(id|key|code|number|num|uuid|email|name|label)$/.test(last(f));
+    const usable = t => Q.fieldsOf(t).filter(f => idLike(f) && !Q.isHidden(pol, f.id));
+    const right = usable(target);
+    const pairs = [];
+    for (const p of sc.parts) for (const l of usable(p.table)) for (const r of right) {
+      const fk = !l.path.length && !r.path.length && links.some(k => (k.from === p.table.key && k.from_col === l.column && k.to === target.key && k.to_col === r.column)
+        || (k.to === p.table.key && k.to_col === l.column && k.from === target.key && k.from_col === r.column));
+      const a = last(l), b = last(r);
+      // Two tables' own "id" columns only link through a foreign key; otherwise they are unrelated row numbers.
+      if (!fk && norm(l.id) === 'id' && norm(r.id) === 'id') continue;
+      const named = fk ? 4 : norm(l.id) === norm(r.id) ? 3 : a === b ? 2 : a.endsWith('id') && b.endsWith('id') ? 1 : /(name|label)$/.test(a) && /(name|label)$/.test(b) ? 0.5 : 0;
+      if (named) pairs.push({ part: p, l, r, fk, named });
+    }
+    pairs.sort((x, y) => y.named - x.named);
+    const name = t => `${source.qi(t.schema)}.${source.qi(t.name)}`;
+    const tested = await Promise.all(pairs.slice(0, 16).map(async ({ part, l, r, fk, named }) => {
+      const L = Q.expr(l, 'a').text, R = Q.expr(r, 'b').text;
+      const rightRows = Number(target.est_rows) > 200000 ? `(SELECT * FROM ${name(target)} LIMIT 50000) b` : `${name(target)} b`;
+      try {
+        const { rows: [m] } = await source.readOnly(
+          `WITH s AS (SELECT DISTINCT v FROM (SELECT ${L} AS v FROM ${name(part.table)} a WHERE ${L} IS NOT NULL AND ${L} <> '' LIMIT 3000) x LIMIT 300),
+                hits AS (SELECT ${R} AS v FROM ${rightRows} WHERE ${R} IN (SELECT v FROM s))
+           SELECT (SELECT count(*) FROM s)::int AS sampled, (SELECT count(DISTINCT v) FROM hits)::int AS matched,
+                  (SELECT count(*) - count(DISTINCT v) FROM hits)::int AS repeats`, [], { timeoutMs: 15000 });
+        const rate = m.sampled ? m.matched / m.sampled : 0;
+        return { left: part.id ? `${part.id}:${l.id}` : l.id, right: r.id, left_label: part.id ? `${Q.tableLabel(part.table)} › ${l.label}` : l.label, right_label: r.label,
+          fk, rate: Math.round(rate * 1000) / 10, sampled: m.sampled, repeats: m.repeats > 0, score: (fk ? 2 : 0) + rate + named / 100 - (!fk && l.kind === 'number' && r.kind === 'number' ? 0.3 : 0) };
+      } catch { return null; }
+    }));
+    res.json({ table: target.key, label: Q.tableLabel(target), suggestions: tested.filter(x => x && (x.fk || x.rate > 0)).sort((a, b) => b.score - a.score).slice(0, 6) });
   }));
 
   // reports & report types
@@ -339,10 +391,11 @@ function mount(app, { requireUser, requireCap, wrap }) {
   };
   const validate = async (req, v) => {
     if (v.type_id) return;
-    const table = await tableFor(req, v.spec.table);
-    Q.compile(v.spec, { table, policy: policy() });
+    const lookup = await lookupFor(req);
+    Q.compile(v.spec, { lookup, policy: policy() });
     if (v.kind === 'type' && !v.spec.customer_field) throw httpErr(400, 'A report type needs a customer field, so customer reports can be made from it');
-    for (const r of v.required) Q.resolveField(table, r.field);
+    const sc = Q.scope(v.spec, lookup);
+    for (const r of v.required) sc.resolve(r.field);
   };
   app.post('/api/rc/reports', ...build, wrap(async (req, res) => {
     const v = saveBody(req); await validate(req, v);
@@ -403,7 +456,7 @@ function mount(app, { requireUser, requireCap, wrap }) {
     const fmt = String(req.query.format || r.default_format || 'xlsx');
     let customers = r.kind === 'type' ? all('SELECT customer FROM rc_reports WHERE type_id = ? AND customer IS NOT NULL', r.id).map(x => x.customer) : [];
     if (!customers.length) {
-      const vals = await execute(req, cleanSpec({ table: r.spec.table, latest: r.spec.latest, columns: [{ field: r.spec.customer_field }, { field: '*', agg: 'count' }] }), { limit: 1000 });
+      const vals = await execute(req, cleanSpec({ table: r.spec.table, latest: r.spec.latest, joins: r.spec.joins, columns: [{ field: r.spec.customer_field }, { field: '*', agg: 'count' }] }), { limit: 1000 });
       customers = vals.rows.map(x => x[0]).filter(v => v != null && v !== '');
     }
     if (customers.length > 300) throw httpErr(400, `That's ${customers.length} customers. Narrow it to 300 or fewer with a filter.`);

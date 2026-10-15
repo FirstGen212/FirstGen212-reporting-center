@@ -42,6 +42,8 @@ Three roles come built in: **Admin** (everything), **Report builder** (run, buil
 
 ## Building a report
 
+- **Finding fields:** type in *Add a column* or *Add a filter* to search every field in every table you can use. Picking a field from another table links that table into the report.
+- **Linked tables:** the app works out how the tables connect, first from foreign keys and then by checking which ID-like fields actually share values (for example the company ID inside a census snapshot and `airtable_id` in the company directory). You can change the match, choose whether rows with no match are kept, and use only the newest row of a linked history table.
 - **Columns:** any field, optionally summarised (count, count distinct, sum, average, min, max). When any column is summarised, the others become the grouping.
 - **Filters:** depend on the field type. Text has *is*, *contains*, *is any of* and similar; numbers have comparisons and *between*; dates have *on*, *before*, *between*, *last/next N days*, *this month*, *last month* and *this year*; any field can be *empty* or *not empty*. Values can use `{{customer}}` and `{{today}}`.
 - **History:** *Only the newest row for each record* turns a change-log table (like `census_snapshot_history`) into one row per record, optionally as of a date.
