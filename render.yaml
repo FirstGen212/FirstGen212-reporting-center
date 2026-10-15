@@ -1,0 +1,43 @@
+# Render Blueprint: one web service with a small persistent disk for the app's own SQLite database
+# (users, saved reports, schedules, shared links). Report data itself stays in Supabase and is only read.
+services:
+  - type: web
+    name: reporting-center
+    runtime: node
+    plan: starter            # persistent disks require a paid instance
+    region: virginia
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: reporting-center-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DB_PATH
+        value: /var/data/reporting-center.db
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DELIVERY_MODE
+        value: dry_run
+      - key: REPORTING_DB_URL
+        sync: false          # the Supabase connection string (a read-only role is best; see DEPLOY.md)
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
