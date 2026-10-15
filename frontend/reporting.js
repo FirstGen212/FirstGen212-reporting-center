@@ -49,10 +49,10 @@ async function rcPlaceField(d, tableKey, fieldId, { link = false } = {}) {
     j.on = { left: best.left, right: best.right };
     j._note = `Linked automatically: ${best.left_label} = ${tLabel(rcTable(tableKey))} › ${best.right_label}${best.fk ? '' : ` (${best.rate}% of sampled values match)`}.`
       + (best.repeats ? ` Some values match more than one ${tLabel(rcTable(tableKey))} row, so those rows repeat. If it's a history table, turn on "only its newest row" below.` : '');
-    toast(`Linked ${tLabel(rcTable(tableKey))} to the report`);
+    toast(`Linked ${tLabel(rcTable(tableKey))} to the report by ${best.left_label} = ${best.right_label}`);
   } else {
-    j._note = `Couldn't tell how ${tLabel(rcTable(tableKey))} links to the report. Choose the matching fields below.`;
-    j._open = true;
+    const names = [s.table, ...s.joins.map(x => x.table)].map(k => tLabel(rcTable(k))).join(', ');
+    throw new Error(`Can't connect ${tLabel(rcTable(tableKey))} to this report: there's no relationship between it and ${names}.`);
   }
   j._suggestions = sug?.suggestions || [];
   s.joins.push(j);
@@ -207,45 +207,6 @@ function blankDraft(kind) {
   return { id: null, name: '', description: '', kind, type_id: null, customer: '', shared: true, audit_mode: 'warn', default_format: 'xlsx', can_edit: true,
     spec: { table: t?.key || '', columns: [], filters: [], match: 'all', latest: null, sort: [], limit: null, customer_field: null, joins: [] }, required: [] };
 }
-async function viewReportEditor(view, arg) {
-  if (arg === 'new' || arg === 'new-type') { if (!RC.draft || RC.draft.id || RC.draft._new !== arg) { RC.draft = { ...blankDraft(arg === 'new-type' ? 'type' : 'report'), _new: arg }; RC.result = null; RC.audit = null; } }
-  else if (!RC.draft || String(RC.draft.id) !== String(arg)) { RC.draft = await api('GET', `/api/rc/reports/${arg}`); RC.result = null; RC.audit = null; RC.side = 'preview'; }
-  const d = RC.draft;
-  const type = d.type_id ? RC.meta.reports.find(r => r.id === d.type_id) : null;
-  const spec = type ? type.spec : d.spec;
-  const editable = d.can_edit && RC.meta.caps.build;
-  const isNew = !d.id;
-
-  view.append(pageHead(isNew ? (d.kind === 'type' ? 'New report type' : 'New report') : d.name,
-    type ? `Customer report made from the "${type.name}" type` : d.kind === 'type' ? 'Report type: a template for customer reports' : 'Report',
-    h('a', { href: '#/reporting', class: 'btn' }, '← All reports'),
-    !isNew ? formatMenu(fmt => rcDownload('GET', `/api/rc/reports/${d.id}/export?format=${fmt}${d.customer ? '' : RC.customerPick ? '&customer=' + encodeURIComponent(RC.customerPick) : ''}`)) : formatMenu(fmt => rcDownload('POST', '/api/rc/export', { name: d.name || 'Report', spec, required: d.required, audit_mode: d.audit_mode, format: fmt, customer: RC.customerPick || null })),
-    editable && !isNew ? h('button', { class: 'danger', onclick: deleteReport }, 'Delete') : null,
-    editable ? h('button', { class: 'primary', onclick: saveReport }, isNew ? 'Save' : 'Save changes') : null));
-  view.append(connectionNote());
-
-  const left = h('div', { class: 'col', style: { gap: '14px' } });
-  left.append(basicsCard(d, editable, type));
-  if (type) left.append(h('div', { class: 'card' }, h('h2', null, 'Definition'), h('p', { class: 'small muted' }, 'Columns, filters and required data come from the report type, so every customer report stays the same shape.'),
-    h('a', { class: 'btn', href: `#/reporting/${type.id}` }, `Open "${type.name}"`)));
-  else left.append(definitionCard(d, editable), auditRulesCard(d, editable));
-  const right = h('div', { class: 'col', style: { gap: '14px', minWidth: 0 } });
-  view.append(h('div', { class: 'rc-grid' }, left, right));
-  drawSide(right, d, spec);
-}
-
-function basicsCard(d, editable, type) {
-  const dis = !editable;
-  return h('div', { class: 'card' }, h('h2', null, 'Report'),
-    h('div', { class: 'form-grid' },
-      h('label', { class: 'field' }, 'Name', h('input', { value: d.name, disabled: dis, placeholder: d.kind === 'type' ? 'e.g. Monthly census roster' : 'e.g. Active employees by company', oninput: e => { d.name = e.target.value; } })),
-      d.type_id ? h('label', { class: 'field' }, 'Customer', customerInput(type.spec, d.customer, v => { d.customer = v; RC.result = null; }, dis)) : null,
-      h('label', { class: 'field' }, 'Default file', h('select', { disabled: dis, onchange: e => { d.default_format = e.target.value; } }, Object.entries(FMT_LABELS).map(([k, l]) => h('option', { value: k, selected: d.default_format === k }, l)))),
-      h('label', { class: 'field' }, 'Visible to', h('select', { disabled: dis, onchange: e => { d.shared = e.target.value === '1'; } }, h('option', { value: '1', selected: d.shared }, 'Everyone with Reporting Center access'), h('option', { value: '0', selected: !d.shared }, 'Only me (and admins)')))),
-    h('label', { class: 'field', style: { marginTop: '10px' } }, 'Description', h('input', { value: d.description || '', disabled: dis, placeholder: 'Optional: what this report is for', oninput: e => { d.description = e.target.value; } })),
-    !d.type_id && (d.spec.customer_field) ? h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { class: 'small muted' }, 'Run for customer'),
-      customerInput(d.spec, RC.customerPick || '', v => { RC.customerPick = v; RC.result = null; }, false), h('span', { class: 'small faint' }, 'blank = all customers')) : null);
-}
 function customerInput(spec, value, onChange, disabled) {
   const id = 'rc-cust-' + Math.random().toString(36).slice(2);
   const list = h('datalist', { id });
@@ -267,124 +228,6 @@ function fieldSelect(table, value, onChange, { disabled, allowCount = false, fil
   sel.append(...groups.values());
   if (value && value !== '*' && !table?.fields.some(f => f.id === value)) sel.append(h('option', { value, selected: true }, value));
   return sel;
-}
-
-function definitionCard(d, editable) {
-  const dis = !editable, s = d.spec;
-  s.joins = s.joins || [];
-  const baseTable = rcTable(s.table);
-  const table = rcScope(s);
-  const card = h('div', { class: 'card' });
-  const redraw = () => card.replaceWith(definitionCard(d, editable));
-  const changed = () => { RC.result = null; };
-  const tableSel = h('select', { disabled: dis, onchange: e => { s.table = e.target.value; s.columns = []; s.filters = []; s.latest = null; s.sort = []; s.customer_field = null; s.joins = []; d.required = []; changed(); route(); } },
-    RC.meta.tables.map(t => h('option', { value: t.key, selected: t.key === s.table }, `${t.schema === 'public' ? t.name : t.key}${t.view ? ' (view)' : ''} · ${rowsEst(t.est_rows)}`)));
-
-  // columns
-  const cols = h('div', { class: 'col' });
-  s.columns.forEach((c, i) => {
-    const f = rcField(table, c.field);
-    const aggs = c.field === '*' ? ['count'] : ['', 'count', 'count_distinct', ...(f?.kind === 'number' ? ['sum', 'avg'] : []), ...(['number', 'date', 'text'].includes(f?.kind) ? ['min', 'max'] : [])];
-    cols.append(h('div', { class: 'rc-row' },
-      fieldSelect(table, c.field, v => { c.field = v; if (v === '*') c.agg = 'count'; changed(); redraw(); }, { disabled: dis, allowCount: true }),
-      h('select', { disabled: dis || c.field === '*', title: 'Show the value, or summarise it', onchange: e => { c.agg = e.target.value || undefined; changed(); } }, aggs.map(a => h('option', { value: a, selected: (c.agg || '') === a }, AGG_LABELS[a]))),
-      h('input', { value: c.label || '', disabled: dis, placeholder: f?.label || 'Column name', oninput: e => { c.label = e.target.value || undefined; } }),
-      dis ? null : h('span', { class: 'row', style: { gap: '2px' } },
-        h('button', { class: 'ghost sm', title: 'Move up', disabled: !i, onclick: () => { [s.columns[i - 1], s.columns[i]] = [s.columns[i], s.columns[i - 1]]; changed(); redraw(); } }, '↑'),
-        h('button', { class: 'ghost sm', 'aria-label': 'Remove column', onclick: () => { s.columns.splice(i, 1); s.sort = s.sort.filter(x => x.col !== i).map(x => ({ ...x, col: x.col > i ? x.col - 1 : x.col })); changed(); redraw(); } }, icon('x', 14)))));
-  });
-  if (!s.columns.length) cols.append(h('div', { class: 'small muted' }, 'No columns yet.'));
-  const addCols = dis ? null : h('div', { class: 'col', style: { gap: '6px', marginTop: '6px' } },
-    fieldFinder(d, async (tk, fid) => { const id = await rcPlaceField(d, tk, fid); s.columns.push({ field: id }); changed(); route(); }, { placeholder: '+ Add a column: search fields in every table…' }),
-    h('div', { class: 'row wrap' },
-      h('button', { class: 'sm', onclick: () => { s.columns.push({ field: '*', agg: 'count' }); changed(); redraw(); } }, '+ Count of rows'),
-      h('button', { class: 'sm', onclick: () => { const have = new Set(s.columns.map(c => c.field)); (baseTable?.fields || []).filter(f => !have.has(f.id) && f.kind !== 'json' && f.kind !== 'list').slice(0, 40).forEach(f => s.columns.push({ field: f.id })); changed(); redraw(); } }, `Add all ${tLabel(baseTable)} fields`)));
-
-  // filters
-  const flts = h('div', { class: 'col' });
-  s.filters.forEach((flt, i) => {
-    const f = rcField(table, flt.field);
-    const ops = RC.meta.ops[f?.kind] || RC.meta.ops.text;
-    if (!ops.includes(flt.op)) flt.op = ops[0];
-    const valIn = (key, ph) => h('input', { value: flt[key] ?? '', disabled: dis, type: f?.kind === 'date' && !['last_days', 'next_days'].includes(flt.op) ? 'text' : 'text', placeholder: ph, oninput: e => { flt[key] = e.target.value; changed(); } });
-    const ph = f?.kind === 'date' ? (['last_days', 'next_days'].includes(flt.op) ? 'days' : 'YYYY-MM-DD') : ['in', 'not_in'].includes(flt.op) ? 'a, b, c' : 'value or {{customer}}';
-    flts.append(h('div', { class: 'rc-row' },
-      fieldSelect(table, flt.field, v => { flt.field = v; changed(); redraw(); }, { disabled: dis }),
-      h('select', { disabled: dis, onchange: e => { flt.op = e.target.value; changed(); redraw(); } }, ops.map(o => h('option', { value: o, selected: flt.op === o }, OP_LABELS[o] || o))),
-      NO_VALUE.includes(flt.op) ? h('span') : h('span', { class: 'row' }, valIn('value', ph), flt.op === 'between' ? valIn('value2', ph) : null),
-      dis ? null : h('button', { class: 'ghost sm', 'aria-label': 'Remove filter', onclick: () => { s.filters.splice(i, 1); changed(); redraw(); } }, icon('x', 14))));
-  });
-  const addFilter = dis ? null : fieldFinder(d, async (tk, fid) => {
-    const id = await rcPlaceField(d, tk, fid);
-    s.filters.push({ field: id, op: (RC.meta.ops[rcField(rcTable(tk), fid)?.kind] || RC.meta.ops.text)[0], value: '' }); changed(); route();
-  }, { placeholder: '+ Add a filter: search fields…' });
-
-  // linked tables
-  const joinsBox = h('div', { class: 'col', style: { gap: '8px' } });
-  s.joins.forEach((j, i) => {
-    const t = rcTable(j.table);
-    const before = rcScope({ ...s, joins: s.joins.slice(0, i) });
-    const uses = id => String(id || '').startsWith(j.id + ':');
-    const latestOnJ = !!j.latest;
-    const box = h('div', { class: 'rc-join' + (!j.on.left || !j.on.right ? ' warn' : '') },
-      h('div', { class: 'row' }, h('b', null, tLabel(t) || j.table), h('span', { class: 'small muted' }, t ? ` ${rowsEst(t.est_rows)}` : ' (no access)'), h('span', { class: 'spacer' }),
-        dis ? null : h('button', { class: 'ghost sm', 'aria-label': 'Remove linked table', title: 'Remove this table and its columns and filters', onclick: () => {
-          s.joins.splice(i, 1); s.columns = s.columns.filter(c => !uses(c.field)); s.filters = s.filters.filter(f => !uses(f.field)); d.required = d.required.filter(r => !uses(r.field));
-          if (uses(s.customer_field)) s.customer_field = null; s.sort = s.sort.filter(x => s.columns[x.col]); changed(); route(); } }, icon('x', 14))),
-      j._note ? h('div', { class: 'small muted' }, j._note) : null,
-      h('div', { class: 'rc-row' }, h('span', { class: 'small muted' }, 'Match'),
-        fieldSelect(before, j.on.left, v => { j.on.left = v; j._note = null; changed(); redraw(); }, { disabled: dis, filter: f => f.kind === 'text' || f.kind === 'number', placeholder: 'a field in the report' }),
-        h('span', { class: 'small muted' }, 'with'),
-        fieldSelect(t, j.on.right, v => { j.on.right = v; j._note = null; changed(); redraw(); }, { disabled: dis, filter: f => f.kind === 'text' || f.kind === 'number', placeholder: `a ${tLabel(t)} field` })),
-      (j._suggestions || []).length > 1 && !dis ? h('div', { class: 'row wrap small' }, h('span', { class: 'muted' }, 'Other matches:'),
-        j._suggestions.filter(x => x.left !== j.on.left || x.right !== j.on.right).slice(0, 3).map(x => h('button', { class: 'sm', onclick: () => { j.on = { left: x.left, right: x.right }; j._note = null; changed(); redraw(); } }, `${x.left_label} = ${x.right_label}${x.fk ? '' : ` · ${x.rate}%`}`))) : null,
-      h('label', { class: 'check small' }, h('input', { type: 'checkbox', disabled: dis, checked: j.keep_unmatched !== false, onchange: e => { j.keep_unmatched = e.target.checked; changed(); } }),
-        `Keep report rows that have no matching ${tLabel(t)} row`),
-      h('label', { class: 'check small' }, h('input', { type: 'checkbox', disabled: dis, checked: latestOnJ, onchange: e => {
-        j.latest = e.target.checked ? { key: t?.fields.find(f => /(^|_)id$/i.test(f.id) && !f.json && f.id !== 'id')?.id || '', order: t?.fields.find(f => f.kind === 'date' && !f.json)?.id || '', as_of: '' } : null; changed(); redraw(); } }),
-        `Use only the newest ${tLabel(t)} row for each record`),
-      latestOnJ ? h('div', { class: 'rc-row' }, h('span', { class: 'small muted' }, 'One row per'), fieldSelect(t, j.latest.key, v => { j.latest.key = v; changed(); }, { disabled: dis }),
-        h('span', { class: 'small muted' }, 'newest by'), fieldSelect(t, j.latest.order, v => { j.latest.order = v; changed(); }, { disabled: dis, filter: f => f.kind === 'date' || f.kind === 'number' })) : null);
-    joinsBox.append(box);
-  });
-  const others = RC.meta.tables.filter(t => t.key !== s.table && !s.joins.some(j => j.table === t.key));
-  const addJoin = dis || !others.length ? null : h('select', { onchange: async e => {
-    const tk = e.target.value; if (!tk) return; e.target.disabled = true;
-    await rcPlaceField(d, tk, '', { link: true }); changed(); route(); } },
-    h('option', { value: '' }, '+ Link another table'), others.map(t => h('option', { value: t.key }, `${tLabel(t)} · ${rowsEst(t.est_rows)}`)));
-
-  // newest row per record
-  const latestOn = !!s.latest;
-  const latest = h('div', { class: 'col' },
-    h('label', { class: 'check small' }, h('input', { type: 'checkbox', disabled: dis, checked: latestOn, onchange: e => {
-      s.latest = e.target.checked ? { key: baseTable?.fields.find(f => /(^|_)id$/i.test(f.id) && !f.json && f.id !== 'id')?.id || baseTable?.fields[0]?.id || '', order: baseTable?.fields.find(f => f.kind === 'date' && !f.json)?.id || '', as_of: '' } : null; changed(); redraw(); } }),
-      `Only the newest ${tLabel(baseTable)} row for each record (for history / snapshot tables)`),
-    latestOn ? h('div', { class: 'rc-row' },
-      h('span', { class: 'small muted' }, 'One row per'), fieldSelect(baseTable, s.latest.key, v => { s.latest.key = v; changed(); }, { disabled: dis }),
-      h('span', { class: 'small muted' }, 'newest by'), fieldSelect(baseTable, s.latest.order, v => { s.latest.order = v; changed(); }, { disabled: dis, filter: f => f.kind === 'date' || f.kind === 'number' }),
-      h('input', { value: s.latest.as_of || '', disabled: dis, placeholder: 'as of (YYYY-MM-DD, blank = now)', title: 'Rebuild the data as it stood on this date. {{today}} works too.', oninput: e => { s.latest.as_of = e.target.value; changed(); } })) : null);
-
-  // sort, limit, customer field
-  const sortRows = h('div', { class: 'row wrap' });
-  const colOpts = sel => s.columns.map((c, i) => h('option', { value: i, selected: sel === i }, c.label || (c.field === '*' ? 'Count' : rcField(table, c.field)?.label || c.field)));
-  s.sort.forEach((x, i) => sortRows.append(h('span', { class: 'chip' }, h('select', { disabled: dis, onchange: e => { x.col = Number(e.target.value); changed(); } }, colOpts(x.col)),
-    h('select', { disabled: dis, onchange: e => { x.dir = e.target.value; changed(); } }, h('option', { value: 'asc', selected: x.dir !== 'desc' }, 'A→Z / low→high'), h('option', { value: 'desc', selected: x.dir === 'desc' }, 'Z→A / high→low')),
-    dis ? null : h('button', { 'aria-label': 'Remove sort', onclick: () => { s.sort.splice(i, 1); changed(); redraw(); } }, '×'))));
-  if (!dis && s.columns.length && s.sort.length < 3) sortRows.append(h('button', { class: 'sm', onclick: () => { s.sort.push({ col: 0, dir: 'asc' }); redraw(); } }, '+ Sort'));
-
-  card.append(...[h('div', { class: 'card-head' }, h('h2', null, 'Data'), h('span', { class: 'spacer' }), h('button', { class: 'sm', onclick: () => runPreview() }, icon('refresh', 14), 'Run')),
-    h('label', { class: 'field' }, s.joins.length ? 'Main table' : 'Table', tableSel),
-    s.joins.length ? h('h3', null, 'Linked tables') : null, joinsBox, addJoin ? h('div', { style: { marginTop: '6px' } }, addJoin) : null,
-    h('h3', null, 'Columns'), cols, addCols,
-    h('h3', null, 'Filters ', s.filters.length > 1 ? h('select', { disabled: dis, class: 'sm', onchange: e => { s.match = e.target.value; changed(); } }, h('option', { value: 'all', selected: s.match !== 'any' }, 'match all'), h('option', { value: 'any', selected: s.match === 'any' }, 'match any')) : null),
-    flts, addFilter,
-    h('h3', null, 'History'), latest,
-    h('h3', null, 'Sort & size'), sortRows,
-    h('div', { class: 'form-grid', style: { marginTop: '8px' } },
-      h('label', { class: 'field' }, 'Row limit', h('input', { type: 'number', min: 1, disabled: dis, value: s.limit || '', placeholder: `all (max ${RC.meta.max_rows.toLocaleString()})`, oninput: e => { s.limit = Number(e.target.value) || null; changed(); } })),
-      h('label', { class: 'field' }, d.kind === 'type' ? 'Customer field (required for a type)' : 'Customer field (optional)',
-        fieldSelect(table, s.customer_field || '', v => { s.customer_field = v || null; changed(); route(); }, { disabled: dis, filter: f => f.kind === 'text' || f.kind === 'number', placeholder: 'None' })))].filter(x => x != null));
-  return card;
 }
 
 function auditRulesCard(d, editable) {
@@ -449,7 +292,7 @@ async function runPreview() {
 }
 function previewPane(body, d, spec) {
   if (!RC.result) {
-    body.append(h('div', { class: 'empty' }, spec.columns?.length ? h('button', { class: 'primary', onclick: runPreview }, icon('refresh', 14), 'Run preview') : 'Add columns on the left, then run a preview.'));
+    body.append(h('div', { class: 'empty' }, spec.columns?.length ? h('button', { class: 'primary', onclick: runPreview }, icon('refresh', 14), 'Run preview') : 'Add fields on the left to see your report.'));
     return;
   }
   const r = RC.result;

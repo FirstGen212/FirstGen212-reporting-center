@@ -45,7 +45,7 @@ test('fields from a linked table', () => {
   assert.match(q.sql, /LEFT JOIN "public"\."census_company_directory" j1 ON \(t\."fields" #>> '\{company,0,id\}'\) = j1\."airtable_id"/);
   assert.match(q.sql, /SELECT \(t\."fields" #>> '\{company,0,label\}'\) AS "c0", j1\."csm" AS "c1"/);
   assert.match(q.sql, /lower\(j1\."csm"\) = lower\(\$1\)/);
-  assert.strictEqual(q.columns[1].label, 'Census Company Directory › Csm');
+  assert.strictEqual(q.columns[1].label, 'Csm');
 });
 test('linked tables: only matching rows, and errors for unknown links', () => {
   const q = Q.compile({ ...joined, joins: [{ ...joined.joins[0], keep_unmatched: false }] }, { lookup });
