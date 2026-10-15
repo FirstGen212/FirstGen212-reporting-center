@@ -150,9 +150,11 @@ async function route() {
   let hash = location.hash || '';
   if (!hash || hash === '#/' || hash === '#') { hash = can('view_reporting') ? '#/reporting' : can('manage_users') ? '#/users' : '#/none'; history.replaceState(null, '', hash); }
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.href === hash || hash.startsWith(a.dataset.href + '/')));
-  const view = $('#view');
-  if (!view) return;
-  view.innerHTML = '';
+  const main = $('#view');
+  if (!main) return;
+  // Each navigation draws into its own page; a slower earlier one that finishes later lands in a detached page, not on screen.
+  const view = h('div');
+  main.replaceChildren(view);
   document.querySelectorAll('.popover').forEach(p => p.remove());
   const [, name, arg] = hash.split('/');
   const views = { reporting: [viewReporting, 'view_reporting'], users: [viewUsers, 'manage_users'], settings: [viewSettings, 'manage_users'], log: [viewLog, 'view_audit'] };
